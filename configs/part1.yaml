@@ -1,0 +1,73 @@
+# ── Part 1: Mixture-of-Experts ─────────────────────────────────────────
+
+# ── Data ────────────────────────────────────────────────────────────────
+dataset_name: "belumind/en-vi-ja-curated-500k-triplets"
+# ~500k triplets × 2 samples each = ~1M training samples.
+# max_samples caps the number of *triplets* used from the train split.
+max_samples: 500000
+tokenizer_vocab_size: 32000
+tokenizer_save_path: "assets/part1_tokenizer"
+
+# ── Sequence ────────────────────────────────────────────────────────────
+N_ctx: 256
+
+# ── Token budget (assignment: equal tokens across all variants) ──────────
+# Each variant trains on exactly this many real (non-padding) tokens.
+# 30M tokens only covered ~1 pass over the training data (~5.8k steps) —
+# genuinely undertrained (repetition collapse in generations). Raised to
+# 100M (~3.3x) to get meaningfully past one epoch while staying within the
+# assignment's "up to 3 hours per variant" envelope on this hardware.
+# run02: budget is set in epochs (4 full passes over the train split, counted
+# in real non-PAD tokens at runtime). When `epochs` is set it overrides
+# max_tokens, and max_steps is derived from it so the cosine LR decays to ~0.
+epochs: 4
+max_tokens: 100000000  # run01 budget (unused while `epochs` is set)
+max_steps: 999999      # safety ceiling; token budget stops training first
+
+# ── Model ────────────────────────────────────────────────────────────────
+D_model: 256
+N_heads: 4
+N_layers: 6
+D_ff: 1024
+dropout: 0.1
+use_rope: true
+norm_type: "rms"
+
+# ── Training ────────────────────────────────────────────────────────────
+seed: 42
+batch_size: 32           # micro-batch; 32 x 4 accum = 128 seqs/step as in run01 (64 x 2 OOMs on an 11GB 2080 Ti)
+grad_accum_steps: 4
+learning_rate: 5.0e-4   # run01 used 1e-4 (BLEU ~21-24); too low for a ~13M model
+weight_decay: 0.1
+beta1: 0.9
+beta2: 0.95
+eps: 1.0e-8
+max_grad_norm: 1.0
+warmup_steps: 500
+lr_schedule: "cosine"
+bucket_batches: true    # length-bucketed train batches (random batches were ~69% padding)
+amp: true               # fp16 autocast + GradScaler (2080 Ti has no bf16)
+
+# ── MoE auxiliary loss ────────────────────────────────────────────────────
+aux_loss_alpha: 0.01
+
+# ── Evaluation ───────────────────────────────────────────────────────────
+eval_every: 1000         # steps between val evaluations
+val_bleu_batches: 4      # 4 x 32 = 128 val samples per intermediate BLEU (greedy decode is slow)
+test_bleu_batches: 60    # 60 x 32 = 1920 test samples for final BLEU (same as run01: 30 x 64)
+n_print_samples: 5       # (source, reference, output) triples printed + logged to WandB per eval
+log_every: 50
+save_every: 1000         # overwrite checkpoints/part1/<variant>/latest.pt (resume point)
+max_new_tokens: 128      # tokens to generate per sample during BLEU eval
+
+# ── Paths ────────────────────────────────────────────────────────────────
+output_dir: "checkpoints/part1"
+hf_repo_id: "Bejaine/Mixture-of-Experts-Optimisers-and-Decoding-Strategies-aNLP"
+
+# ── WandB ────────────────────────────────────────────────────────────────
+# Hosted on CoreWeave Forge (https://forge.coreweave.com/wandb/...), not the
+# public wandb.ai — see _wandb_login() in train.py for the host override.
+wandb_project: "aNLP-Assignment-2"
+wandb_entity: "bejainebirju-iiit-hyderabad"
+wandb_run_name_fmt: "part1_v{variant}_{run_tag}"
+wandb_run_tag: "run02"
